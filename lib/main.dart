@@ -82,7 +82,7 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
   List<dynamic> _cachedItems = [];
   bool _isCacheLoaded = false;
   
-  static const String baseUrl = 'http://localhost:3000'; // EasyERP Backend
+  static const String baseUrl = 'http://192.168.1.116:3005'; // EasyERP Backend
 
   @override
   void initState() {
@@ -110,6 +110,20 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
       });
     } catch (e) {
       debugPrint('Error loading cache: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to load data: $e'),
+            backgroundColor: Colors.red[800],
+            duration: const Duration(seconds: 8),
+            action: SnackBarAction(
+              label: 'RETRY',
+              textColor: Colors.white,
+              onPressed: _loadCache,
+            ),
+          ),
+        );
+      }
     } finally {
       setState(() => _isLoading = false);
     }

@@ -12,7 +12,7 @@ class HistoryPage extends StatefulWidget {
 }
 
 class _HistoryPageState extends State<HistoryPage> {
-  static const String baseUrl = 'http://localhost:3000';
+  static const String baseUrl = 'http://localhost:3005';
   List<dynamic> _historyInvoices = [];
   List<dynamic> _filteredInvoices = [];
   bool _isLoading = true;

@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'package:intl/intl.dart';
 import 'package:flutter/foundation.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:speech_to_text/speech_to_text.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'history_page.dart';
 
 void main() {
@@ -87,12 +89,29 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
   bool _isProcessingScan = false;
   final MobileScannerController _scannerController = MobileScannerController();
   
+  // Voice search state
+  final SpeechToText _speechToText = SpeechToText();
+  bool _isListening = false;
+  
   static const String baseUrl = 'http://localhost:3005'; // EasyERP Backend
 
   @override
   void initState() {
     super.initState();
     _loadCache();
+    _initSpeech();
+  }
+
+  void _initSpeech() async {
+    try {
+      await _speechToText.initialize(
+        onStatus: (status) => debugPrint('Speech Status: $status'),
+        onError: (error) => debugPrint('Speech Error: $error'),
+      );
+    } catch (e) {
+      debugPrint('Speech Init Error: $e');
+    }
+    setState(() {});
   }
 
   @override
@@ -134,7 +153,7 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
       setState(() => _searchResults = _cachedItems.take(20).toList());
       return;
     }
-    
+    debugPrint('Searching for: $query | Cached Items: ${_cachedItems.length}');
     final lowercaseQuery = query.toLowerCase();
     setState(() {
       _searchResults = _cachedItems.where((item) {
@@ -143,6 +162,60 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
         return barcode.contains(lowercaseQuery) || desc.contains(lowercaseQuery);
       }).take(50).toList();
     });
+  }
+
+  void _startVoiceSearch() async {
+    if (!_isListening) {
+      bool available = await _speechToText.initialize();
+      if (available) {
+        setState(() => _isListening = true);
+        _speechToText.listen(
+          listenFor: const Duration(seconds: 10),
+          pauseFor: const Duration(seconds: 5),
+          onResult: (result) {
+            final words = result.recognizedWords;
+            debugPrint('DART: Recognized words: "$words" | Final: ${result.finalResult}');
+            
+            Future.microtask(() {
+              if (mounted) {
+                setState(() {
+                  _itemSearchController.text = words;
+                  _isListening = !result.finalResult;
+                });
+                _searchItems(words);
+                
+                if (result.finalResult) {
+                  _handleVoiceResult(words);
+                }
+              }
+            });
+          },
+        );
+      }
+    } else {
+      setState(() => _isListening = false);
+      _speechToText.stop();
+    }
+  }
+
+  void _handleVoiceResult(String words) async {
+    await _searchItems(words);
+    if (_searchResults.isNotEmpty) {
+      // Check if any result is an exact match for barcode or description
+      final exactMatch = _searchResults.firstWhere(
+        (item) => (item['BARCODE'] ?? '').toString().toLowerCase() == words.toLowerCase() ||
+                  (item['DESCRIPTION'] ?? '').toString().toLowerCase() == words.toLowerCase(),
+        orElse: () => null,
+      );
+
+      if (exactMatch != null) {
+        final barcode = exactMatch['BARCODE']?.toString();
+        setState(() => _searchResults = []);
+        if (barcode != null) {
+          _showItemSearchDialog(initialBarcode: barcode);
+        }
+      }
+    }
   }
 
   Future<void> _searchSuppliers(String query) async {
@@ -427,6 +500,7 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
                         ),
                       ],
                     ),
+                  ],
                 ),
               ),
             ],
@@ -855,9 +929,6 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
     );
   }
 
-  void _addItem() {
-    _showItemSearchDialog();
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -887,9 +958,18 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
           ),
         ),
         floatingActionButton: _activeTab == 1 
-          ? Row(
-              mainAxisAlignment: MainAxisAlignment.end,
+          ? Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
+                FloatingActionButton(
+                  heroTag: 'voice_button',
+                  onPressed: _startVoiceSearch,
+                  backgroundColor: _isListening ? Colors.redAccent : const Color(0xFF4F46E5),
+                  foregroundColor: Colors.white,
+                  elevation: 4,
+                  child: Icon(_isListening ? Icons.mic_rounded : Icons.mic_none_rounded),
+                ),
+                const SizedBox(height: 12),
                 FloatingActionButton(
                   heroTag: 'scan_button',
                   onPressed: () {
@@ -904,16 +984,6 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
                   foregroundColor: Colors.white,
                   elevation: 4,
                   child: Icon(_isScanningMode ? Icons.stop_rounded : Icons.qr_code_scanner_rounded),
-                ),
-                const SizedBox(width: 12),
-                FloatingActionButton.extended(
-                  heroTag: 'add_button',
-                  onPressed: _addItem,
-                  label: const Text('Add Item', style: TextStyle(fontWeight: FontWeight.bold)),
-                  icon: const Icon(Icons.add_rounded),
-                  backgroundColor: const Color(0xFF4F46E5),
-                  foregroundColor: Colors.white,
-                  elevation: 4,
                 ),
               ],
             )
@@ -1313,6 +1383,27 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
             ) : null,
           ),
           onChanged: _searchItems,
+          onFieldSubmitted: (val) {
+            if (val.trim().isNotEmpty) {
+              if (_searchResults.isNotEmpty) {
+                final barcode = _searchResults.first['BARCODE']?.toString();
+                setState(() {
+                  _searchResults = [];
+                  _itemSearchController.clear();
+                });
+                if (barcode != null) {
+                  _showItemSearchDialog(initialBarcode: barcode);
+                }
+              } else {
+                final query = val.trim();
+                setState(() {
+                  _searchResults = [];
+                  _itemSearchController.clear();
+                });
+                _showItemSearchDialog(initialBarcode: query);
+              }
+            }
+          },
         ),
         if (_itemSearchController.text.isNotEmpty)
           Container(
@@ -1349,16 +1440,14 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
                       subtitle: Text('Barcode: ${item['BARCODE']} | Avg Cost: SAR ${item['AVG_PUR_PRICE']}'),
                       trailing: const Icon(Icons.add_circle_outline_rounded, color: Color(0xFF4F46E5)),
                       onTap: () {
+                        final barcode = item['BARCODE']?.toString();
                         setState(() {
-                          _items.add(InvoiceItem(
-                            code: item['BARCODE']?.toString() ?? 'N/A',
-                            description: item['DESCRIPTION'] ?? 'N/A',
-                            qty: 1,
-                            price: (item['AVG_PUR_PRICE'] as num?)?.toDouble() ?? 0.0,
-                          ));
                           _searchResults = [];
                           _itemSearchController.clear();
                         });
+                        if (barcode != null) {
+                          _showItemSearchDialog(initialBarcode: barcode);
+                        }
                       },
                     );
                   },

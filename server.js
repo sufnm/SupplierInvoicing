@@ -49,7 +49,7 @@ app.get('/api/items/search', async (req, res) => {
         SELECT TOP 20 
           b.BARCODE, 
           b.DESCRIPTION,
-          s.LAST_PUR_PRICE 
+          s.AVG_PUR_PRICE 
         FROM dbo.BARCODE b
         LEFT JOIN dbo.STOCK_MASTER s ON b.BARCODE = s.ITEM_CODE
         WHERE b.BARCODE LIKE @query OR b.DESCRIPTION LIKE @query
@@ -171,16 +171,6 @@ app.post('/api/sales/save', async (req, res) => {
           )
         `);
 
-      // 4. Update STOCK_MASTER LAST_PUR_PRICE
-      const priceRequest = new sql.Request(transaction);
-      await priceRequest
-        .input('itemCode', sql.VarChar, row.itemCode)
-        .input('costPrice', sql.Decimal(18, 2), row.price)
-        .query(`
-          UPDATE dbo.STOCK_MASTER 
-          SET LAST_PUR_PRICE = @costPrice 
-          WHERE ITEM_CODE = @itemCode
-        `);
     }
 
     await transaction.commit();
@@ -198,7 +188,7 @@ app.get('/api/items/all', async (req, res) => {
   try {
     const pool = await getPool();
     const result = await pool.request().query(`
-      SELECT b.BARCODE, b.DESCRIPTION, s.LAST_PUR_PRICE 
+      SELECT b.BARCODE, b.DESCRIPTION, s.AVG_PUR_PRICE 
       FROM dbo.BARCODE b
       LEFT JOIN dbo.STOCK_MASTER s ON b.BARCODE = s.ITEM_CODE
       ORDER BY b.DESCRIPTION ASC
@@ -248,7 +238,7 @@ app.get('/api/sales/history/:invoiceNo', async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3005;
 app.listen(PORT, async () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });

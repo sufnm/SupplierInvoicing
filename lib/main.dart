@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'package:intl/intl.dart';
 import 'package:flutter/foundation.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:speech_to_text/speech_to_text.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'history_page.dart';
 
 void main() {
@@ -82,12 +84,47 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
   List<dynamic> _cachedItems = [];
   bool _isCacheLoaded = false;
   
+<<<<<<< HEAD
   static const String baseUrl = 'http://192.168.1.116:3005'; // EasyERP Backend
+=======
+  // Scanning state
+  bool _isScanningMode = false;
+  bool _isProcessingScan = false;
+  final MobileScannerController _scannerController = MobileScannerController();
+  
+  // Voice search state
+  final SpeechToText _speechToText = SpeechToText();
+  bool _isListening = false;
+  
+  static const String baseUrl = 'http://localhost:3005'; // EasyERP Backend
+>>>>>>> 04fa877a8cfbf0b56ef5f0c1fa323e5961dbc1c2
 
   @override
   void initState() {
     super.initState();
     _loadCache();
+    _initSpeech();
+  }
+
+  void _initSpeech() async {
+    try {
+      await _speechToText.initialize(
+        onStatus: (status) => debugPrint('Speech Status: $status'),
+        onError: (error) => debugPrint('Speech Error: $error'),
+      );
+    } catch (e) {
+      debugPrint('Speech Init Error: $e');
+    }
+    setState(() {});
+  }
+
+  @override
+  void dispose() {
+    _scannerController.dispose();
+    _invoiceNoController.dispose();
+    _supplierController.dispose();
+    _itemSearchController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadCache() async {
@@ -134,7 +171,7 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
       setState(() => _searchResults = _cachedItems.take(20).toList());
       return;
     }
-    
+    debugPrint('Searching for: $query | Cached Items: ${_cachedItems.length}');
     final lowercaseQuery = query.toLowerCase();
     setState(() {
       _searchResults = _cachedItems.where((item) {
@@ -143,6 +180,60 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
         return barcode.contains(lowercaseQuery) || desc.contains(lowercaseQuery);
       }).take(50).toList();
     });
+  }
+
+  void _startVoiceSearch() async {
+    if (!_isListening) {
+      bool available = await _speechToText.initialize();
+      if (available) {
+        setState(() => _isListening = true);
+        _speechToText.listen(
+          listenFor: const Duration(seconds: 10),
+          pauseFor: const Duration(seconds: 5),
+          onResult: (result) {
+            final words = result.recognizedWords;
+            debugPrint('DART: Recognized words: "$words" | Final: ${result.finalResult}');
+            
+            Future.microtask(() {
+              if (mounted) {
+                setState(() {
+                  _itemSearchController.text = words;
+                  _isListening = !result.finalResult;
+                });
+                _searchItems(words);
+                
+                if (result.finalResult) {
+                  _handleVoiceResult(words);
+                }
+              }
+            });
+          },
+        );
+      }
+    } else {
+      setState(() => _isListening = false);
+      _speechToText.stop();
+    }
+  }
+
+  void _handleVoiceResult(String words) async {
+    await _searchItems(words);
+    if (_searchResults.isNotEmpty) {
+      // Check if any result is an exact match for barcode or description
+      final exactMatch = _searchResults.firstWhere(
+        (item) => (item['BARCODE'] ?? '').toString().toLowerCase() == words.toLowerCase() ||
+                  (item['DESCRIPTION'] ?? '').toString().toLowerCase() == words.toLowerCase(),
+        orElse: () => null,
+      );
+
+      if (exactMatch != null) {
+        final barcode = exactMatch['BARCODE']?.toString();
+        setState(() => _searchResults = []);
+        if (barcode != null) {
+          _showItemSearchDialog(initialBarcode: barcode);
+        }
+      }
+    }
   }
 
   Future<void> _searchSuppliers(String query) async {
@@ -267,7 +358,11 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
       builder: (context) => Dialog(
         backgroundColor: Colors.transparent,
         child: Container(
-          width: 500,
+          width: MediaQuery.of(context).size.width * 0.9,
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.9,
+            maxWidth: 500,
+          ),
           decoration: BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.circular(24),
@@ -275,8 +370,9 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
               BoxShadow(color: Colors.black.withOpacity(0.15), blurRadius: 30, offset: const Offset(0, 10)),
             ],
           ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
             children: [
               // Header Gradient
               Container(
@@ -429,8 +525,9 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
           ),
         ),
       ),
-    );
-  }
+    ),
+  );
+}
 
   Future<void> _showItemSearchDialog({String? initialBarcode}) async {
     Map<String, dynamic>? selectedItem;
@@ -448,8 +545,21 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
       );
       if (matched != null) {
         selectedItem = matched;
-        costPriceController.text = (matched['LAST_PUR_PRICE'] ?? 0.0).toString();
+        costPriceController.text = (matched['AVG_PUR_PRICE'] ?? 0.0).toString();
+      } else {
+        selectedItem = {
+          'BARCODE': initialBarcode,
+          'DESCRIPTION': '',
+          'AVG_PUR_PRICE': 0.0,
+          'IS_NEW': true,
+        };
+        costPriceController.text = '0.0';
       }
+    }
+
+    final TextEditingController descriptionController = TextEditingController();
+    if (selectedItem != null && selectedItem!['IS_NEW'] == true) {
+      descriptionController.text = '';
     }
 
     showDialog(
@@ -476,13 +586,21 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
             
             final double? newPrice = double.tryParse(costPriceController.text);
             final int? qty = int.tryParse(qtyController.text);
+            final String description = (selectedItem!['IS_NEW'] == true) 
+                ? descriptionController.text 
+                : (selectedItem!['DESCRIPTION'] ?? 'N/A');
             
-            if (newPrice == null || qty == null) return;
+            if (newPrice == null || qty == null || description.isEmpty) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Please fill all fields'), backgroundColor: Colors.orange),
+              );
+              return;
+            }
 
             setState(() {
               _items.add(InvoiceItem(
                 code: selectedItem!['BARCODE']?.toString() ?? 'N/A',
-                description: selectedItem!['DESCRIPTION'] ?? 'N/A',
+                description: description,
                 qty: qty,
                 price: newPrice,
               ));
@@ -495,8 +613,11 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
             backgroundColor: Colors.transparent,
             insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 40),
             child: Container(
-              width: 500,
-              height: 580,
+              width: MediaQuery.of(context).size.width * 0.9,
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(context).size.height * 0.9,
+                maxWidth: 500,
+              ),
               decoration: BoxDecoration(
                 color: Colors.white,
                 borderRadius: BorderRadius.circular(24),
@@ -600,31 +721,7 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
                                         child: IconButton(
                                           padding: EdgeInsets.zero,
                                           onPressed: () async {
-                                            var res = await Navigator.push(
-                                              context,
-                                              MaterialPageRoute(
-                                                builder: (context) => const BarcodeScannerPage(),
-                                              ),
-                                            );
-                                            if (res is String && res.isNotEmpty) {
-                                              final item = _cachedItems.firstWhere(
-                                                (element) => (element['BARCODE'] ?? '').toString().trim() == res.trim(),
-                                                orElse: () => null,
-                                              );
-                                              if (item != null) {
-                                                setDialogState(() {
-                                                  selectedItem = item;
-                                                  costPriceController.text = (item['LAST_PUR_PRICE'] ?? 0.0).toString();
-                                                });
-                                              } else {
-                                                ScaffoldMessenger.of(context).showSnackBar(
-                                                  SnackBar(
-                                                    content: Text('No item found with barcode "$res"'),
-                                                    backgroundColor: Colors.red,
-                                                  ),
-                                                );
-                                              }
-                                            }
+                                            // This button is not used in continuous scanning mode but kept for backward compatibility
                                           },
                                           icon: const Icon(Icons.qr_code_scanner_rounded, color: Colors.white, size: 24),
                                         ),
@@ -648,7 +745,7 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
                                                   onTap: () {
                                                     setDialogState(() {
                                                       selectedItem = item;
-                                                      costPriceController.text = (item['LAST_PUR_PRICE'] ?? 0.0).toString();
+                                                      costPriceController.text = (item['AVG_PUR_PRICE'] ?? 0.0).toString();
                                                     });
                                                   },
                                                   borderRadius: BorderRadius.circular(12),
@@ -686,11 +783,11 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
                                                           mainAxisSize: MainAxisSize.min,
                                                           children: [
                                                             Text(
-                                                              'SAR ${double.tryParse(item['LAST_PUR_PRICE']?.toString() ?? '0.0')?.toStringAsFixed(2) ?? '0.00'}',
+                                                              'SAR ${double.tryParse(item['AVG_PUR_PRICE']?.toString() ?? '0.0')?.toStringAsFixed(2) ?? '0.00'}',
                                                               style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13, color: Color(0xFF18181B)),
                                                             ),
                                                             const Text(
-                                                              'Last Cost',
+                                                              'Avg Cost',
                                                               style: TextStyle(color: Color(0xFF71717A), fontSize: 9, fontWeight: FontWeight.w500),
                                                             ),
                                                           ],
@@ -722,15 +819,19 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
                                       crossAxisAlignment: CrossAxisAlignment.start,
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
-                                        Text(
-                                          selectedItem!['DESCRIPTION'] ?? 'Unknown',
-                                          style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 15, color: Color(0xFF1E293B)),
-                                        ),
-                                        const SizedBox(height: 4),
-                                        Text(
-                                          'Barcode: ${selectedItem!['BARCODE']}',
-                                          style: const TextStyle(color: Color(0xFF64748B), fontSize: 12, letterSpacing: 0.5),
-                                        ),
+                                        if (selectedItem!['IS_NEW'] == true)
+                                          _buildPremiumTextField('Item Description', descriptionController, Icons.description_rounded, autofocus: true)
+                                        else ...[
+                                          Text(
+                                            selectedItem!['DESCRIPTION'] ?? 'Unknown',
+                                            style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 15, color: Color(0xFF1E293B)),
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            'Barcode: ${selectedItem!['BARCODE']}',
+                                            style: const TextStyle(color: Color(0xFF64748B), fontSize: 12, letterSpacing: 0.5),
+                                          ),
+                                        ],
                                       ],
                                     ),
                                   ),
@@ -744,7 +845,7 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
                                       const SizedBox(width: 12),
                                       Expanded(
                                         flex: 2,
-                                        child: _buildPremiumField('Quantity', qtyController, Icons.shopping_bag_rounded),
+                                        child: _buildPremiumField('Quantity', qtyController, Icons.shopping_bag_rounded, autofocus: selectedItem!['IS_NEW'] != true),
                                       ),
                                     ],
                                   ),
@@ -784,7 +885,7 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
     );
   }
 
-    Widget _buildPremiumField(String label, TextEditingController controller, IconData icon) {
+    Widget _buildPremiumField(String label, TextEditingController controller, IconData icon, {bool autofocus = false}) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
@@ -794,6 +895,7 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
         TextField(
           controller: controller,
           keyboardType: TextInputType.number,
+          autofocus: autofocus,
           style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
           decoration: InputDecoration(
             prefixIcon: Icon(icon, color: const Color(0xFF4F46E5), size: 20),
@@ -813,77 +915,98 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
     );
   }
 
-  void _addItem() {
-    _showItemSearchDialog();
+  Widget _buildPremiumTextField(String label, TextEditingController controller, IconData icon, {bool autofocus = false}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(label.toUpperCase(), style: const TextStyle(fontSize: 9, fontWeight: FontWeight.w800, color: Color(0xFF94A3B8), letterSpacing: 1)),
+        const SizedBox(height: 8),
+        TextField(
+          controller: controller,
+          autofocus: autofocus,
+          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+          decoration: InputDecoration(
+            prefixIcon: Icon(icon, color: const Color(0xFF4F46E5), size: 18),
+            hintText: 'Enter $label',
+            hintStyle: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12, fontWeight: FontWeight.normal),
+            filled: true,
+            fillColor: Colors.white,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: Color(0xFF4F46E5), width: 2),
+            ),
+          ),
+        ),
+      ],
+    );
   }
+
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFFFAFAFA),
-      body: SafeArea(
-        child: Column(
-          children: [
-            _buildCustomAppBar(),
-            _buildTabNavigation(),
-            Expanded(
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 300),
-                child: _activeTab == 0 ? _buildHeaderView() : _buildItemsView(),
-              ),
-            ),
-            if (_activeTab == 0) _buildBottomSummary(),
-          ],
-        ),
-      ),
-      floatingActionButton: _activeTab == 1 
-        ? Row(
-            mainAxisAlignment: MainAxisAlignment.end,
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          _searchResults = [];
+          _supplierResults = [];
+        });
+        FocusScope.of(context).unfocus();
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFFFAFAFA),
+        body: SafeArea(
+          child: Column(
             children: [
-              FloatingActionButton(
-                heroTag: 'scan_button',
-                onPressed: () async {
-                  var res = await Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => const BarcodeScannerPage(),
-                    ),
-                  );
-                  if (res is String && res.isNotEmpty) {
-                    final item = _cachedItems.firstWhere(
-                      (element) => (element['BARCODE'] ?? '').toString().trim() == res.trim(),
-                      orElse: () => null,
-                    );
-                    if (item != null) {
-                      _showItemSearchDialog(initialBarcode: res);
-                    } else {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('No item found with barcode "$res"'),
-                          backgroundColor: Colors.red,
-                        ),
-                      );
-                    }
-                  }
-                },
-                backgroundColor: const Color(0xFF4F46E5),
-                foregroundColor: Colors.white,
-                elevation: 4,
-                child: const Icon(Icons.qr_code_scanner_rounded),
+              _buildCustomAppBar(),
+              _buildTabNavigation(),
+              Expanded(
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 300),
+                  child: _activeTab == 0 ? _buildHeaderView() : _buildItemsView(),
+                ),
               ),
-              const SizedBox(width: 12),
-              FloatingActionButton.extended(
-                heroTag: 'add_button',
-                onPressed: _addItem,
-                label: const Text('Add Item', style: TextStyle(fontWeight: FontWeight.bold)),
-                icon: const Icon(Icons.add_rounded),
-                backgroundColor: const Color(0xFF4F46E5),
-                foregroundColor: Colors.white,
-                elevation: 4,
-              ),
+              if (_activeTab == 0) _buildBottomSummary(),
             ],
-          )
-        : null,
+          ),
+        ),
+        floatingActionButton: _activeTab == 1 
+          ? Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                FloatingActionButton(
+                  heroTag: 'voice_button',
+                  onPressed: _startVoiceSearch,
+                  backgroundColor: _isListening ? Colors.redAccent : const Color(0xFF4F46E5),
+                  foregroundColor: Colors.white,
+                  elevation: 4,
+                  child: Icon(_isListening ? Icons.mic_rounded : Icons.mic_none_rounded),
+                ),
+                const SizedBox(height: 12),
+                FloatingActionButton(
+                  heroTag: 'scan_button',
+                  onPressed: () {
+                    setState(() {
+                      _isScanningMode = !_isScanningMode;
+                      if (_isScanningMode) {
+                        _searchResults = []; // Clear other search results when scanning
+                      }
+                    });
+                  },
+                  backgroundColor: _isScanningMode ? const Color(0xFF10B981) : const Color(0xFF4F46E5),
+                  foregroundColor: Colors.white,
+                  elevation: 4,
+                  child: Icon(_isScanningMode ? Icons.stop_rounded : Icons.qr_code_scanner_rounded),
+                ),
+              ],
+            )
+          : null,
+      ),
     );
   }
 
@@ -990,7 +1113,13 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
     bool isActive = _activeTab == index;
     return Expanded(
       child: GestureDetector(
-        onTap: () => setState(() => _activeTab = index),
+      onTap: () {
+        setState(() {
+          _activeTab = index;
+          _searchResults = [];
+          _supplierResults = [];
+        });
+      },
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 200),
           padding: const EdgeInsets.symmetric(vertical: 12),
@@ -1039,7 +1168,13 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
             width: double.infinity,
             height: 56,
             child: ElevatedButton(
-              onPressed: () => setState(() => _activeTab = 1),
+              onPressed: () {
+                setState(() {
+                  _activeTab = 1;
+                  _searchResults = [];
+                  _supplierResults = [];
+                });
+              },
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF4F46E5),
                 foregroundColor: Colors.white,
@@ -1058,6 +1193,8 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
     return Column(
       key: const ValueKey(1),
       children: [
+        if (_isScanningMode)
+          _buildScannerPanel(),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
           child: _buildItemSearchField(),
@@ -1264,8 +1401,29 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
             ) : null,
           ),
           onChanged: _searchItems,
+          onFieldSubmitted: (val) {
+            if (val.trim().isNotEmpty) {
+              if (_searchResults.isNotEmpty) {
+                final barcode = _searchResults.first['BARCODE']?.toString();
+                setState(() {
+                  _searchResults = [];
+                  _itemSearchController.clear();
+                });
+                if (barcode != null) {
+                  _showItemSearchDialog(initialBarcode: barcode);
+                }
+              } else {
+                final query = val.trim();
+                setState(() {
+                  _searchResults = [];
+                  _itemSearchController.clear();
+                });
+                _showItemSearchDialog(initialBarcode: query);
+              }
+            }
+          },
         ),
-        if (_searchResults.isNotEmpty)
+        if (_itemSearchController.text.isNotEmpty)
           Container(
             margin: const EdgeInsets.only(top: 8),
             decoration: BoxDecoration(
@@ -1275,30 +1433,43 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
               boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 20)],
             ),
             constraints: const BoxConstraints(maxHeight: 300),
-            child: ListView.builder(
-              shrinkWrap: true,
-              itemCount: _searchResults.length,
-              itemBuilder: (context, index) {
-                final item = _searchResults[index];
-                return ListTile(
-                  title: Text(item['DESCRIPTION'] ?? 'No Description'),
-                  subtitle: Text('Barcode: ${item['BARCODE']} | Price: SAR ${item['SALE_PRICE']}'),
-                  trailing: const Icon(Icons.add_circle_outline_rounded, color: Color(0xFF4F46E5)),
+            child: _searchResults.isEmpty 
+              ? ListTile(
+                  leading: const CircleAvatar(
+                    backgroundColor: Color(0xFFEEF2FF),
+                    child: Icon(Icons.add_rounded, color: Color(0xFF4F46E5)),
+                  ),
+                  title: Text('Add "${_itemSearchController.text}" as new item'),
+                  subtitle: const Text('This barcode was not found in the database'),
                   onTap: () {
-                    setState(() {
-                      _items.add(InvoiceItem(
-                        code: item['BARCODE']?.toString() ?? 'N/A',
-                        description: item['DESCRIPTION'] ?? 'N/A',
-                        qty: 1,
-                        price: (item['SALE_PRICE'] as num?)?.toDouble() ?? 0.0,
-                      ));
-                      _searchResults = [];
-                      _itemSearchController.clear();
-                    });
+                    final query = _itemSearchController.text;
+                    setState(() => _searchResults = []);
+                    _itemSearchController.clear();
+                    _showItemSearchDialog(initialBarcode: query);
                   },
-                );
-              },
-            ),
+                )
+              : ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: _searchResults.length,
+                  itemBuilder: (context, index) {
+                    final item = _searchResults[index];
+                    return ListTile(
+                      title: Text(item['DESCRIPTION'] ?? 'No Description'),
+                      subtitle: Text('Barcode: ${item['BARCODE']} | Avg Cost: SAR ${item['AVG_PUR_PRICE']}'),
+                      trailing: const Icon(Icons.add_circle_outline_rounded, color: Color(0xFF4F46E5)),
+                      onTap: () {
+                        final barcode = item['BARCODE']?.toString();
+                        setState(() {
+                          _searchResults = [];
+                          _itemSearchController.clear();
+                        });
+                        if (barcode != null) {
+                          _showItemSearchDialog(initialBarcode: barcode);
+                        }
+                      },
+                    );
+                  },
+                ),
           ),
       ],
     );
@@ -1374,6 +1545,123 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
       ),
     );
   }
+  Widget _buildScannerPanel() {
+    final bool isWindows = defaultTargetPlatform == TargetPlatform.windows;
+    
+    return Container(
+      height: isWindows ? 120 : 200,
+      margin: const EdgeInsets.fromLTRB(24, 8, 24, 16),
+      decoration: BoxDecoration(
+        color: Colors.black,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFF10B981), width: 2),
+        boxShadow: [
+          BoxShadow(color: const Color(0xFF10B981).withOpacity(0.2), blurRadius: 15),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(18),
+        child: isWindows 
+          ? _buildWindowsScannerSimulator()
+          : Stack(
+              children: [
+                MobileScanner(
+                  controller: _scannerController,
+                  onDetect: (capture) async {
+                    if (_isProcessingScan) return;
+                    
+                    final List<Barcode> barcodes = capture.barcodes;
+                    if (barcodes.isNotEmpty) {
+                      final String? code = barcodes.first.rawValue;
+                      if (code != null) {
+                        setState(() => _isProcessingScan = true);
+                        await _showItemSearchDialog(initialBarcode: code);
+                        setState(() => _isProcessingScan = false);
+                      }
+                    }
+                  },
+                ),
+                // Scanning UI Overlay
+                Container(
+                  decoration: BoxDecoration(
+                    border: Border.all(color: Colors.white24, width: 1),
+                  ),
+                ),
+                const Center(
+                  child: Icon(Icons.center_focus_strong_rounded, color: Colors.white54, size: 40),
+                ),
+                Positioned(
+                  top: 12,
+                  right: 12,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF10B981),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Text('ACTIVE', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                  ),
+                ),
+              ],
+            ),
+      ),
+    );
+  }
+
+  Widget _buildWindowsScannerSimulator() {
+    final TextEditingController simulatorController = TextEditingController();
+    return Container(
+      color: const Color(0xFF18181B),
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Text('WINDOWS SCANNER SIMULATOR', style: TextStyle(color: Color(0xFF10B981), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1)),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: simulatorController,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: InputDecoration(
+                    hintText: 'Enter barcode...',
+                    hintStyle: const TextStyle(color: Colors.white38),
+                    filled: true,
+                    fillColor: Colors.white10,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                  ),
+                  onSubmitted: (val) async {
+                    if (val.trim().isNotEmpty && !_isProcessingScan) {
+                      setState(() => _isProcessingScan = true);
+                      await _showItemSearchDialog(initialBarcode: val.trim());
+                      setState(() => _isProcessingScan = false);
+                      simulatorController.clear();
+                    }
+                  },
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton(
+                onPressed: () async {
+                  final val = simulatorController.text.trim();
+                  if (val.isNotEmpty && !_isProcessingScan) {
+                    setState(() => _isProcessingScan = true);
+                    await _showItemSearchDialog(initialBarcode: val);
+                    setState(() => _isProcessingScan = false);
+                    simulatorController.clear();
+                  }
+                },
+                icon: const Icon(Icons.send_rounded, color: Color(0xFF10B981)),
+                style: IconButton.styleFrom(backgroundColor: Colors.white10),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class InvoiceItem {
@@ -1390,177 +1678,6 @@ class InvoiceItem {
   });
 
   double get total => qty * price;
-}
-
-class BarcodeScannerPage extends StatefulWidget {
-  const BarcodeScannerPage({super.key});
-
-  @override
-  State<BarcodeScannerPage> createState() => _BarcodeScannerPageState();
-}
-
-class _BarcodeScannerPageState extends State<BarcodeScannerPage> {
-  final TextEditingController _mockController = TextEditingController();
-  final MobileScannerController? _controller = defaultTargetPlatform != TargetPlatform.windows ? MobileScannerController() : null;
-
-  @override
-  void dispose() {
-    _controller?.dispose();
-    _mockController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final bool isWindows = defaultTargetPlatform == TargetPlatform.windows;
-
-    return Scaffold(
-      backgroundColor: isWindows ? const Color(0xFFFAFAFA) : Colors.black,
-      appBar: AppBar(
-        title: Text(isWindows ? 'Barcode Scanner Simulator' : 'Scan Barcode', style: TextStyle(color: isWindows ? Colors.black : Colors.white)),
-        backgroundColor: isWindows ? Colors.white : Colors.transparent,
-        elevation: isWindows ? 1 : 0,
-        iconTheme: IconThemeData(color: isWindows ? Colors.black : Colors.white),
-      ),
-      body: isWindows
-          ? _buildWindowsSimulator()
-          : Stack(
-              children: [
-                MobileScanner(
-                  controller: _controller,
-                  onDetect: (capture) {
-                    final List<Barcode> barcodes = capture.barcodes;
-                    if (barcodes.isNotEmpty) {
-                      final String? code = barcodes.first.rawValue;
-                      if (code != null) {
-                        Navigator.pop(context, code);
-                      }
-                    }
-                  },
-                ),
-                // Scanning mask
-                ColorFiltered(
-                  colorFilter: ColorFilter.mode(
-                    Colors.black.withOpacity(0.5),
-                    BlendMode.srcOut,
-                  ),
-                  child: Stack(
-                    children: [
-                      Container(
-                        decoration: const BoxDecoration(
-                          color: Colors.black,
-                          backgroundBlendMode: BlendMode.dstOut,
-                        ),
-                      ),
-                      Align(
-                        alignment: Alignment.center,
-                        child: Container(
-                          width: 260,
-                          height: 260,
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(24),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                // Scanner Border and Animation
-                Align(
-                  alignment: Alignment.center,
-                  child: SizedBox(
-                    width: 260,
-                    height: 260,
-                    child: Stack(
-                      children: [
-                        _ScannerBorder(),
-                        const _ScanningLineAnimation(),
-                      ],
-                    ),
-                  ),
-                ),
-                const Positioned(
-                  bottom: 40,
-                  left: 0,
-                  right: 0,
-                  child: Center(
-                    child: Text(
-                      'Align barcode inside the frame to scan',
-                      style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-    );
-  }
-
-  Widget _buildWindowsSimulator() {
-    return Center(
-      child: Container(
-        constraints: const BoxConstraints(maxWidth: 400),
-        padding: const EdgeInsets.all(24),
-        child: Card(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.qr_code_scanner_rounded, size: 64, color: Color(0xFF4F46E5)),
-                const SizedBox(height: 16),
-                const Text(
-                  'Barcode Simulator',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 8),
-                const Text(
-                  'Since cameras are not easily accessible on Windows builds, you can type a test barcode below to simulate scanning.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Color(0xFF64748B), fontSize: 12),
-                ),
-                const SizedBox(height: 24),
-                TextField(
-                  controller: _mockController,
-                  autofocus: true,
-                  decoration: InputDecoration(
-                    hintText: 'Enter barcode (e.g. 12345)',
-                    prefixIcon: const Icon(Icons.keyboard_rounded),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
-                  onSubmitted: (val) {
-                    if (val.trim().isNotEmpty) {
-                      Navigator.pop(context, val.trim());
-                    }
-                  },
-                ),
-                const SizedBox(height: 16),
-                SizedBox(
-                  width: double.infinity,
-                  height: 48,
-                  child: ElevatedButton(
-                    onPressed: () {
-                      final val = _mockController.text.trim();
-                      if (val.isNotEmpty) {
-                        Navigator.pop(context, val);
-                      }
-                    },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF4F46E5),
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    ),
-                    child: const Text('Simulate Scan', style: TextStyle(fontWeight: FontWeight.bold)),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
 }
 
 class _ScannerBorder extends StatelessWidget {

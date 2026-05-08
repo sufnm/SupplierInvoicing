@@ -267,7 +267,11 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
       builder: (context) => Dialog(
         backgroundColor: Colors.transparent,
         child: Container(
-          width: 500,
+          width: MediaQuery.of(context).size.width * 0.9,
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.9,
+            maxWidth: 500,
+          ),
           decoration: BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.circular(24),
@@ -275,8 +279,9 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
               BoxShadow(color: Colors.black.withOpacity(0.15), blurRadius: 30, offset: const Offset(0, 10)),
             ],
           ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
             children: [
               // Header Gradient
               Container(
@@ -422,15 +427,15 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
                         ),
                       ],
                     ),
-                  ],
                 ),
               ),
             ],
           ),
         ),
       ),
-    );
-  }
+    ),
+  );
+}
 
   Future<void> _showItemSearchDialog({String? initialBarcode}) async {
     Map<String, dynamic>? selectedItem;
@@ -516,8 +521,11 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
             backgroundColor: Colors.transparent,
             insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 40),
             child: Container(
-              width: 500,
-              height: 580,
+              width: MediaQuery.of(context).size.width * 0.9,
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(context).size.height * 0.9,
+                maxWidth: 500,
+              ),
               decoration: BoxDecoration(
                 color: Colors.white,
                 borderRadius: BorderRadius.circular(24),
@@ -1306,7 +1314,7 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
           ),
           onChanged: _searchItems,
         ),
-        if (_searchResults.isNotEmpty)
+        if (_itemSearchController.text.isNotEmpty)
           Container(
             margin: const EdgeInsets.only(top: 8),
             decoration: BoxDecoration(
@@ -1316,30 +1324,45 @@ class _InvoiceDashboardState extends State<InvoiceDashboard> {
               boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 20)],
             ),
             constraints: const BoxConstraints(maxHeight: 300),
-            child: ListView.builder(
-              shrinkWrap: true,
-              itemCount: _searchResults.length,
-              itemBuilder: (context, index) {
-                final item = _searchResults[index];
-                return ListTile(
-                  title: Text(item['DESCRIPTION'] ?? 'No Description'),
-                  subtitle: Text('Barcode: ${item['BARCODE']} | Avg Cost: SAR ${item['AVG_PUR_PRICE']}'),
-                  trailing: const Icon(Icons.add_circle_outline_rounded, color: Color(0xFF4F46E5)),
+            child: _searchResults.isEmpty 
+              ? ListTile(
+                  leading: const CircleAvatar(
+                    backgroundColor: Color(0xFFEEF2FF),
+                    child: Icon(Icons.add_rounded, color: Color(0xFF4F46E5)),
+                  ),
+                  title: Text('Add "${_itemSearchController.text}" as new item'),
+                  subtitle: const Text('This barcode was not found in the database'),
                   onTap: () {
-                    setState(() {
-                      _items.add(InvoiceItem(
-                        code: item['BARCODE']?.toString() ?? 'N/A',
-                        description: item['DESCRIPTION'] ?? 'N/A',
-                        qty: 1,
-                        price: (item['AVG_PUR_PRICE'] as num?)?.toDouble() ?? 0.0,
-                      ));
-                      _searchResults = [];
-                      _itemSearchController.clear();
-                    });
+                    final query = _itemSearchController.text;
+                    setState(() => _searchResults = []);
+                    _itemSearchController.clear();
+                    _showItemSearchDialog(initialBarcode: query);
                   },
-                );
-              },
-            ),
+                )
+              : ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: _searchResults.length,
+                  itemBuilder: (context, index) {
+                    final item = _searchResults[index];
+                    return ListTile(
+                      title: Text(item['DESCRIPTION'] ?? 'No Description'),
+                      subtitle: Text('Barcode: ${item['BARCODE']} | Avg Cost: SAR ${item['AVG_PUR_PRICE']}'),
+                      trailing: const Icon(Icons.add_circle_outline_rounded, color: Color(0xFF4F46E5)),
+                      onTap: () {
+                        setState(() {
+                          _items.add(InvoiceItem(
+                            code: item['BARCODE']?.toString() ?? 'N/A',
+                            description: item['DESCRIPTION'] ?? 'N/A',
+                            qty: 1,
+                            price: (item['AVG_PUR_PRICE'] as num?)?.toDouble() ?? 0.0,
+                          ));
+                          _searchResults = [];
+                          _itemSearchController.clear();
+                        });
+                      },
+                    );
+                  },
+                ),
           ),
       ],
     );

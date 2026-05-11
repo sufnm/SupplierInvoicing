@@ -3,6 +3,7 @@ import 'package:intl/intl.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'invoice_detail_page.dart';
+import 'config.dart';
 
 class HistoryPage extends StatefulWidget {
   const HistoryPage({super.key});
@@ -12,7 +13,7 @@ class HistoryPage extends StatefulWidget {
 }
 
 class _HistoryPageState extends State<HistoryPage> {
-  static const String baseUrl = 'http://192.168.1.116:3005';
+  String get baseUrl => AppConfig.baseUrl;
   List<dynamic> _historyInvoices = [];
   List<dynamic> _filteredInvoices = [];
   bool _isLoading = true;
@@ -318,8 +319,8 @@ class _HistoryInvoiceCard extends StatelessWidget {
             const Icon(Icons.chevron_right_rounded, color: Color(0xFF9CA3AF), size: 18),
           ],
         ),
-        onTap: () {
-          Navigator.push(
+        onTap: () async {
+          final result = await Navigator.push<Map<String, dynamic>>(
             context,
             MaterialPageRoute(
               builder: (context) => InvoiceDetailPage(
@@ -328,6 +329,9 @@ class _HistoryInvoiceCard extends StatelessWidget {
               ),
             ),
           );
+          if (result != null && context.mounted) {
+            Navigator.pop(context, result);
+          }
         },
       ),
     );

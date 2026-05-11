@@ -35,7 +35,7 @@ async function getPool() {
   }
 }
 
-// Item search endpoint with Last Purchase Price
+// Item search endpoint with Last Purchase Price and VAT_PERCENT
 app.get('/api/items/search', async (req, res) => {
   const { q } = req.query;
   // If no query, we'll return TOP 20 items anyway to show a list initially
@@ -49,9 +49,11 @@ app.get('/api/items/search', async (req, res) => {
         SELECT TOP 20 
           b.BARCODE, 
           b.DESCRIPTION,
-          s.AVG_PUR_PRICE 
+          s.AVG_PUR_PRICE,
+          COALESCE(h.VAT_PERCENT, 15) AS VAT_PERCENT
         FROM dbo.BARCODE b
         LEFT JOIN dbo.STOCK_MASTER s ON b.BARCODE = s.ITEM_CODE
+        LEFT JOIN dbo.HD_ITEMMASTER h ON b.BARCODE = h.ITEM_CODE
         WHERE b.BARCODE LIKE @query OR b.DESCRIPTION LIKE @query
         ORDER BY b.DESCRIPTION ASC
       `);
@@ -112,6 +114,46 @@ app.get('/api/suppliers/search', async (req, res) => {
   }
 });
 
+// Get default supplier from AC_OPTIONS
+app.get('/api/suppliers/default', async (req, res) => {
+  try {
+    const pool = await getPool();
+    const result = await pool.request().query(`
+      SELECT ACC_NO, ACC_NAME 
+      FROM dbo.ACCOUNTS_INFO 
+      WHERE ACC_NO = (SELECT CASH_PUR_AC FROM dbo.AC_OPTIONS WHERE ID = 1)
+    `);
+    if (result.recordset.length > 0) {
+      res.json(result.recordset[0]);
+    } else {
+      res.status(404).json({ error: 'Default supplier not found' });
+    }
+  } catch (error) {
+    console.error("Failed to fetch default supplier:", error.message);
+    res.status(500).json({ error: 'Database query error' });
+  }
+});
+
+// Get default settings from AC_OPTIONS
+app.get('/api/settings/default', async (req, res) => {
+  try {
+    const pool = await getPool();
+    const result = await pool.request().query(`
+      SELECT COALESCE(PRICE_INCLUDE_VAT, 0) AS PRICE_INCLUDE_VAT, COALESCE(VAT_PERCENT, 15) AS VAT_PERCENT 
+      FROM dbo.AC_OPTIONS 
+      WHERE ID = 1
+    `);
+    if (result.recordset.length > 0) {
+      res.json(result.recordset[0]);
+    } else {
+      res.json({ PRICE_INCLUDE_VAT: false, VAT_PERCENT: 15 });
+    }
+  } catch (error) {
+    console.error("Failed to fetch default settings:", error.message);
+    res.status(500).json({ error: 'Database query error' });
+  }
+});
+
 // Save Invoice with full schema logic
 app.post('/api/sales/save', async (req, res) => {
   const invoice = req.body;
@@ -121,17 +163,34 @@ app.post('/api/sales/save', async (req, res) => {
   try {
     await transaction.begin();
 
+    const wrCode = invoice.wrCode !== undefined ? invoice.wrCode : 0;
+    const brnCode = invoice.brnCode !== undefined ? invoice.brnCode : 0;
+
     // 1. Insert into DATA_ENTRY_WEB to trigger INVOICE_NO generation
     const webRequest = new sql.Request(transaction);
     const webResult = await webRequest
       .input('acCode', sql.VarChar, invoice.ACCODE)
       .input('eName', sql.VarChar, invoice.ENAME)
       .input('netAmount', sql.Decimal(18, 2), invoice.NET_AMOUNT)
+      .input('gTotal', sql.Decimal(18, 2), invoice.G_TOTAL || invoice.NET_AMOUNT)
+      .input('vatAmount', sql.Decimal(18, 2), invoice.VAT_AMOUNT || 0)
       .input('trnType', sql.Int, 2)
       .input('refNo', sql.VarChar, invoice.REF_INV_NO || '')
+      .input('priceIncludeVat', sql.Bit, invoice.PRICE_INCLUDE_VAT ? 1 : 0)
+      .input('taxableAmount', sql.Decimal(18, 2), invoice.TAXABLE_AMOUNT || invoice.NET_AMOUNT)
+      .input('currency', sql.Int, 1)
+      .input('crate', sql.Decimal(18, 4), 1.0)
+      .input('wrCode', sql.Int, wrCode)
+      .input('brnCode', sql.Int, brnCode)
       .query(`
-        INSERT INTO dbo.DATA_ENTRY_WEB (ACCODE, ENAME, NET_AMOUNT, TRN_TYPE, CURDATE, REF_NO)
-        VALUES (@acCode, @eName, @netAmount, @trnType, GETDATE(), @refNo);
+        INSERT INTO dbo.DATA_ENTRY_WEB (
+          ACCODE, ENAME, G_TOTAL, NET_AMOUNT, VAT_AMOUNT, TRN_TYPE, CURDATE, REF_NO, PRICE_INCLUDE_VAT, TAXABLE_AMOUNT,
+          CURRENCY, CRATE, WR_CODE, BRN_CODE
+        )
+        VALUES (
+          @acCode, @eName, @gTotal, @netAmount, @vatAmount, @trnType, GETDATE(), @refNo, @priceIncludeVat, @taxableAmount,
+          @currency, @crate, @wrCode, @brnCode
+        );
 
         SELECT REC_NO, INVOICE_NO FROM dbo.DATA_ENTRY_WEB WHERE REC_NO = SCOPE_IDENTITY();
       `);
@@ -148,10 +207,13 @@ app.post('/api/sales/save', async (req, res) => {
         .input('description', sql.VarChar, row.description)
         .input('qty', sql.Decimal(18, 2), row.qty)
         .input('price', sql.Decimal(18, 2), row.price)
-        .input('total', sql.Decimal(18, 2), row.qty * row.price)
+        .input('total', sql.Decimal(18, 2), row.total || (row.qty * row.price))
         .input('invoiceNo', sql.VarChar, invoiceNo)
         .input('rowNum', sql.Int, rowNum++)
         .input('recNo', sql.Int, recNo)
+        .input('vatPercent', sql.Decimal(18, 2), row.vatPercent || 0)
+        .input('vatAmount', sql.Decimal(18, 2), row.vatAmount || 0)
+        .input('wrCode', sql.Int, wrCode)
         .query(`
           INSERT INTO dbo.GRID_ITEM (BARCODE, DESCRIPTION, QTY, price, TOTAL, INVOICE_NO, ROWNUM, TRN_TYPE, REC_NO, UNIT, vat_percent, VAT_AMOUNT, WR_CODE)
           VALUES (
@@ -165,9 +227,9 @@ app.post('/api/sales/save', async (req, res) => {
             2, 
             @recNo, 
             COALESCE((SELECT TOP 1 UNIT FROM dbo.HD_ITEMMASTER WHERE ITEM_CODE = @barcode), 'PCS'),
-            0,
-            0,
-            0
+            @vatPercent,
+            @vatAmount,
+            @wrCode
           )
         `);
 
@@ -183,14 +245,15 @@ app.post('/api/sales/save', async (req, res) => {
   }
 });
 
-// Get all items (preloads in-app memory cache)
+// Get all items (preloads in-app memory cache) with VAT_PERCENT
 app.get('/api/items/all', async (req, res) => {
   try {
     const pool = await getPool();
     const result = await pool.request().query(`
-      SELECT b.BARCODE, b.DESCRIPTION, s.AVG_PUR_PRICE 
+      SELECT b.BARCODE, b.DESCRIPTION, s.AVG_PUR_PRICE, COALESCE(h.VAT_PERCENT, 15) AS VAT_PERCENT
       FROM dbo.BARCODE b
       LEFT JOIN dbo.STOCK_MASTER s ON b.BARCODE = s.ITEM_CODE
+      LEFT JOIN dbo.HD_ITEMMASTER h ON b.BARCODE = h.ITEM_CODE
       ORDER BY b.DESCRIPTION ASC
     `);
     console.log(`📦 Cache Preload: Found ${result.recordset.length} items`);
@@ -226,7 +289,7 @@ app.get('/api/sales/history/:invoiceNo', async (req, res) => {
     const result = await pool.request()
       .input('invoiceNo', sql.VarChar, invoiceNo)
       .query(`
-        SELECT BARCODE, DESCRIPTION, QTY, price, TOTAL, ROWNUM, UNIT 
+        SELECT BARCODE, DESCRIPTION, QTY, price, TOTAL, ROWNUM, UNIT, COALESCE(vat_percent, 15) AS vat_percent 
         FROM dbo.GRID_ITEM 
         WHERE INVOICE_NO = @invoiceNo AND TRN_TYPE = 2
         ORDER BY ROWNUM ASC
@@ -235,6 +298,48 @@ app.get('/api/sales/history/:invoiceNo', async (req, res) => {
   } catch (error) {
     console.error("Failed to fetch invoice items:", error.message);
     res.status(500).json({ error: 'Database query error' });
+  }
+});
+
+// User authentication login endpoint
+app.post('/api/login', async (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) {
+    return res.status(400).json({ success: false, error: 'Username and password are required' });
+  }
+
+  try {
+    const pool = await getPool();
+    const result = await pool.request()
+      .input('username', sql.VarChar, username)
+      .input('password', sql.VarChar, password)
+      .query(`
+        SELECT UserId, UserName, Password, Superuser, Group_Name, WR_CODE, BRN_CODE
+        FROM dbo.UserInfo
+        WHERE UserName = @username AND Password = @password
+      `);
+
+    if (result.recordset.length > 0) {
+      const user = result.recordset[0];
+      console.log(`✅ Successful login: ${username}`);
+      res.json({
+        success: true,
+        user: {
+          userId: user.UserId,
+          userName: user.UserName,
+          superuser: user.Superuser,
+          groupName: user.Group_Name,
+          wrCode: user.WR_CODE,
+          brnCode: user.BRN_CODE
+        }
+      });
+    } else {
+      console.log(`❌ Failed login attempt: ${username}`);
+      res.status(401).json({ success: false, error: 'Invalid username or password' });
+    }
+  } catch (error) {
+    console.error("Login verification failed:", error.message);
+    res.status(500).json({ success: false, error: 'Database authentication error' });
   }
 });
 

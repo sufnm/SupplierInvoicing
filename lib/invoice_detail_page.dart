@@ -111,14 +111,18 @@ class _InvoiceDetailPageState extends State<InvoiceDetailPage> {
             ),
           ),
         ),
-        const Spacer(),
-        Text(
-          'INVOICE DETAIL',
-          style: TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.bold,
-            letterSpacing: 1.5,
-            color: Colors.indigo[700],
+        ElevatedButton.icon(
+          onPressed: () {
+            Navigator.pop(context, widget.invoice);
+          },
+          icon: const Icon(Icons.edit_note_rounded, size: 16),
+          label: const Text('Open in Entry Screen', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFF4F46E5),
+            foregroundColor: Colors.white,
+            elevation: 0,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
           ),
         ),
       ],
